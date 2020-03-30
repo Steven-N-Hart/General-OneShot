@@ -11,9 +11,9 @@ from preprocess import create_triplets_oneshot_img
 from data_runner import DataRunner
 from steps import write_tb
 import numpy as np
-
+from sklearn import metrics
 import re
-
+from sklearn.metrics import roc_curve,roc_auc_score
 print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 if len(tf.config.experimental.list_physical_devices('GPU')) == 0:
     exit()
@@ -127,8 +127,14 @@ parser.add_argument("--tfrecord_label",
 parser.add_argument('-f', "--log_freq",
                     dest="log_freq",
                     default=100,
-                    help="Set the logging frequency for saving Tensorboard updates")
 
+                    help="Set the logging frequency for saving Tensorboard updates", type=int)
+
+parser.add_argument('-a', "--accuracy_num_batch",
+                    dest="acc_num_batch",
+                    default=20,
+                    help="Number of batches to consider to calculate training and validation accuracy", type=int)
+                    
 args = parser.parse_args()
 
 logging.basicConfig(stream=sys.stderr, level=args.logLevel,
@@ -174,9 +180,11 @@ train_ds = tf.data.Dataset.from_generator(train_ds_dr.get_distributed_datasets,
                                                              "pos_img": [args.patch_size, args.patch_size, 3],
                                                              "neg_img": [args.patch_size, args.patch_size, 3]
                                                          }, [3]))
-
-train_ds = train_ds.batch(args.BATCH_SIZE)
-training_steps = int(train_data.min_images / args.BATCH_SIZE)
+train_data_num=0
+for img_data, labels in train_ds:
+    train_data_num=train_data_num+1
+train_ds = train_ds.shuffle(train_data_num, reshuffle_each_iteration=True).batch(args.BATCH_SIZE)
+training_steps = int(train_data_num / args.BATCH_SIZE)
 logger.debug('Completed Training dataset')
 
 if args.image_dir_validation:
@@ -210,10 +218,16 @@ if args.image_dir_validation:
                                                                       "pos_img": [args.patch_size, args.patch_size, 3],
                                                                       "neg_img": [args.patch_size, args.patch_size, 3]},
                                                                   [3]))
-    validation_ds = validation_ds.batch(args.BATCH_SIZE).repeat()
-    validation_steps = int(validation_data.min_images / args.BATCH_SIZE)
+    #validation_ds = validation_ds.batch(args.BATCH_SIZE)
+    #validation_steps = int(validation_data.min_images / args.BATCH_SIZE)
+    #
+    
+    validation_data_num=0
+    for img_data, labels in validation_ds:
+        validation_data_num=validation_data_num+1
+    validation_ds = validation_ds.shuffle(validation_data_num, reshuffle_each_iteration=True).batch(args.BATCH_SIZE)
+    validation_steps = int(validation_data_num / args.BATCH_SIZE)
     logger.debug('Completed Validation dataset')
-
 else:
     validation_ds = None
     validation_steps = None
@@ -224,6 +238,7 @@ else:
 out_dir = os.path.join(args.log_dir,
                        args.model_name + '_' + args.optimizer + '_' + str(args.lr) + '_' + str(args.nb_layers))
 checkpoint_name = 'training_checkpoints'
+
 
 overwrite = True
 if overwrite is True:
@@ -319,6 +334,7 @@ for epoch in range(1, args.num_epochs + 1):
         percent_correct = sum(results) / len(results) * 100
         values, counts = np.unique(results, return_counts=True)
 
+
         print('\rEpoch:{}\tStep:{}\tCorrect: {} ({:0.1f}%)\tneg_dist:{:0.4f}\tpos_dist:{:0.4f}\tLoss:{:0.4f}\t'
               'Values:{}\tCounts:{}\t'.format(
             epoch,
@@ -334,9 +350,78 @@ for epoch in range(1, args.num_epochs + 1):
 
         if step % args.log_freq == 0 and step > 0:
             checkpoint.step.assign(step)
-            write_tb(writer, step, neg_dist, pos_dist, loss, percent_correct, siamese_net, neg_hist, pos_hist)
+
             manager.save()
             siamese_net.save_weights(os.path.join(out_dir, 'siamese_net'))
+            #training accuracy and threshold
+            #loading weights from the latest check point
+            m1 = GetModel(model_name=args.model_name, img_size=args.patch_size, embedding_size=args.embedding_size, num_layers=args.nb_layers)
+            logger.debug('Model constructed')
+            model_ori = m1.build_model()
+            logger.debug('Model built')
+            model.load_weights(os.path.join(out_dir,"siamese_net"))
+            # optimizer = m1.get_optimizer(args.optimizer)
+            # checkpoint_ori = tf.train.Checkpoint(model=model_ori, optimizer=optimizer, step=tf.Variable(1))
+            # manager_ori = tf.train.CheckpointManager(checkpoint_ori, out_dir, max_to_keep=3)
+            # checkpoint_ori.restore(manager_ori.latest_checkpoint)
+            # print(manager_ori.latest_checkpoint)
+            #getting optimum threshold from training data
+            train_ds = train_ds.take(args.acc_num_batch)    
+            prob=[]
+            y=[]
+            num=0
+            #iterating thorugh each batch of the training dataset
+            for img_data, labels in train_ds:
+                num=num+1
+                #getting embedding vector for three images 
+                anchor_img, pos_img, neg_img = img_data['anchor_img'], img_data['pos_img'], img_data['neg_img']
+                anchor_result = np.asarray(model_ori.predict([anchor_img]))
+                pos_result = np.asarray(model_ori.predict([pos_img]))
+                neg_result = np.asarray(model_ori.predict([neg_img]))
+                #for each image in the batch calculate the distance
+                for i in range(args.BATCH_SIZE):
+                    pos=np.sum(np.square(anchor_result[i]-pos_result[i]))
+                    neg=np.sum(np.square(anchor_result[i]-neg_result[i]))
+                    #add positive and negative distance to prob list
+                    prob.append(pos)
+                    prob.append(neg)
+                    y.append(1)
+                    y.append(0)
+            #getting percentiles from prob distribution        
+            perc_prob = [np.percentile(prob, i) for i in range(5,95,1)]
+            #finding the best threshold from the percentiles    
+            prob_aucs = [roc_auc_score(y,[ 1 if x >= perc_prob[i] else 0 for x in prob ]) for i in range(len(perc_prob))]
+            #getting the index for best auc
+            idx_opti= np.argmax(prob_aucs)
+            #best threshold
+            threshold=perc_prob[idx_opti]
+            #calculating training accuracy
+            opti_thres_pred=[ 1 if x >= threshold else 0 for x in prob ]
+            training_acc = roc_auc_score(y, opti_thres_pred)
+            #calculating validation accuracy
+            validation_ds = validation_ds.take(args.acc_num_batch)    
+            prob=[]
+            y=[]
+            num=0
+            for img_data, labels in validation_ds:
+                num=num+1
+                anchor_img, pos_img, neg_img = img_data['anchor_img'], img_data['pos_img'], img_data['neg_img']
+                anchor_result = np.asarray(model_ori.predict([anchor_img]))
+                pos_result = np.asarray(model_ori.predict([pos_img]))
+                neg_result = np.asarray(model_ori.predict([neg_img]))
+                for i in range(args.BATCH_SIZE):
+                    pos=np.sum(np.square(anchor_result[i]-pos_result[i]))
+                    neg=np.sum(np.square(anchor_result[i]-neg_result[i]))
+                    prob.append(pos)
+                    prob.append(neg)
+                    y.append(1)
+                    y.append(0)
+            ##calculating validation accuracy from best threshold obtained from training data       
+            opti_thres_pred=[ 1 if x >= threshold else 0 for x in prob ]
+            testing_acc = roc_auc_score(y, opti_thres_pred)
+            print(epoch,step,training_acc, testing_acc)
+            #print(threshold,training_acc, testing_acc)
+            write_tb(writer, step, neg_dist, pos_dist, loss, percent_correct, siamese_net, neg_hist, pos_hist, training_acc, testing_acc)
     print('')  # Create a newline
     prev_step = step
     manager.save()
