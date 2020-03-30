@@ -366,12 +366,12 @@ for epoch in range(1, args.num_epochs + 1):
             # checkpoint_ori.restore(manager_ori.latest_checkpoint)
             # print(manager_ori.latest_checkpoint)
             #getting optimum threshold from training data
-            train_ds = train_ds.take(args.acc_num_batch)    
+            train_ds1 = train_ds.take(args.acc_num_batch)    
             prob=[]
             y=[]
             num=0
             #iterating thorugh each batch of the training dataset
-            for img_data, labels in train_ds:
+            for img_data, labels in train_ds1:
                 num=num+1
                 #getting embedding vector for three images 
                 anchor_img, pos_img, neg_img = img_data['anchor_img'], img_data['pos_img'], img_data['neg_img']
@@ -399,11 +399,11 @@ for epoch in range(1, args.num_epochs + 1):
             opti_thres_pred=[ 1 if x >= threshold else 0 for x in prob ]
             training_acc = roc_auc_score(y, opti_thres_pred)
             #calculating validation accuracy
-            validation_ds = validation_ds.take(args.acc_num_batch)    
+            validation_ds1 = validation_ds.take(args.acc_num_batch)    
             prob=[]
             y=[]
             num=0
-            for img_data, labels in validation_ds:
+            for img_data, labels in validation_ds1:
                 num=num+1
                 anchor_img, pos_img, neg_img = img_data['anchor_img'], img_data['pos_img'], img_data['neg_img']
                 anchor_result = np.asarray(model_ori.predict([anchor_img]))
