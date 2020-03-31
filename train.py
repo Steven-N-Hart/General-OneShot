@@ -303,6 +303,8 @@ results = []
 sliding_window_size = 50
 prev_step = 1  # Adding this variable so that tensorboard doesn't revert to step 1, at epoch 2
 for epoch in range(1, args.num_epochs + 1):
+    train_ds1 = train_ds.take(args.acc_num_batch)
+    validation_ds1 = validation_ds.take(args.acc_num_batch)
     # Iterate over the batches of the dataset.
     for step, data in enumerate(train_ds):
         step += prev_step
@@ -366,7 +368,7 @@ for epoch in range(1, args.num_epochs + 1):
             # checkpoint_ori.restore(manager_ori.latest_checkpoint)
             # print(manager_ori.latest_checkpoint)
             #getting optimum threshold from training data
-            train_ds1 = train_ds.take(args.acc_num_batch)    
+            #train_ds1 = train_ds.take(args.acc_num_batch)
             prob=[]
             y=[]
             num=0
@@ -399,7 +401,7 @@ for epoch in range(1, args.num_epochs + 1):
             opti_thres_pred=[ 1 if x >= threshold else 0 for x in prob ]
             training_acc = roc_auc_score(y, opti_thres_pred)
             #calculating validation accuracy
-            validation_ds1 = validation_ds.take(args.acc_num_batch)    
+            #validation_ds1 = validation_ds.take(args.acc_num_batch)
             prob=[]
             y=[]
             num=0
