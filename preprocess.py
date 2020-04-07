@@ -2,89 +2,101 @@ import os
 import logging
 import tensorflow as tf
 import random
-
+import glob
 logger = logging.getLogger(__name__)
-global tf_image, tf_label, status
 
 
-class Preprocess:
+def get_doublets_and_labels(directory_path, label_dict=None, suffix='jpg'):
+    list_ds = glob.glob(directory_path +"/*/*"+suffix)
+    anchors = list()
+    others = list()
+    labels = list()
+    for img_path in list_ds:
+        class_name = get_class_name(img_path)
+        positive, p_classname, negative, n_classname = get_another_of_each_class(img_path, list_ds)
+        anchors.append(img_path)
+        others.append(positive)
+        try:
+            labels.append(int(p_classname))
+        except ValueError:
+            labels.append(int(label_dict[p_classname]))
+        anchors.append(img_path)
+        others.append(negative)
+        try:
+            labels.append(int(n_classname))
+        except ValueError:
+            labels.append(int(label_dict[n_classname]))
 
-    def __init__(self, directory_path, filetype, tfrecord_image, tfrecord_label):
-        """
-        Return a randomized list of each directory's contents
+    return anchors, others, labels
 
-        :param directory_path: a directory that contains sub-folders of images
-
-        :returns class_files: a dict of each file in each folder
-        """
-        global tf_image, tf_label
-        tf_image = tfrecord_image
-        tf_label = tfrecord_label
-        logger.debug('Initializing Preprocess')
-        self.directory_path = directory_path
-        self.filetype = filetype
-        self.classes = self.__get_classes()
-        self.tfrecord_image = tfrecord_image
-        self.tfrecord_label = tfrecord_label
-        self.files, self.labels, self.label_dict, self.min_images, self.filetype, self.tfrecord_image, self.tfrecord_label = self.__get_lists()
-
-    def __check_min_image(self, prev, new):
-        logger.debug('Counting the number of images')
-        # if prev is None or prev > new:
-        # return new
-        # else:
-        # return prev
-        if prev is None:
-            return new
-        else:
-            return prev + new
-
-    def __get_classes(self):
-        classes = os.listdir(self.directory_path)
-        return classes.__len__()
-
-    def __get_lists(self):
-        logging.debug('Getting initial list of images and labels')
-
-        files = []
-        labels = []
-        label_dict = dict()
-        label_number = 0
-        min_images = None
-        filetype = self.filetype
-        tfrecord_image = self.tfrecord_image
-        tfrecord_label = self.tfrecord_label
-        classes = os.listdir(self.directory_path)
-        for x in classes:
-            class_files = os.listdir(os.path.join(self.directory_path, x))
-            class_files = [os.path.join(self.directory_path, x, j) for j in class_files]
-            class_labels = [label_number for x in range(class_files.__len__())]
-            min_images = self.__check_min_image(min_images, class_labels.__len__())
-            label_dict[x] = label_number
-            label_number += 1
-            files.extend(class_files)
-            labels.extend(class_labels)
-
-        labels = tf.dtypes.cast(labels, tf.uint8)
-        return files, labels, label_dict, min_images, filetype, tfrecord_image, tfrecord_label
+def is_same_class(file_path, class_name):
+    if get_class_name(file_path) == class_name:
+        return True
+    else:
+        return False
 
 
-def update_status(stat):
-    global status
-    status = stat
-    return stat
+def get_class_name(file_path):
+    return os.path.basename(os.path.dirname(file_path))
+
+def get_another_of_each_class(file_path, list_ds):
+    """
+    Find examples of classes from the same and different groups
+
+    Args:
+        file_path: complete path to target image, assuming it is in a directory that is the classname
+        list_ds: list of all possible filepaths to search
+
+    Returns:
+        positive: Name of file path for image with the same class
+        p_classname: Class name of the positive match
+        negative: Name of file path for image with the different class
+        n_classname: Class name of the negative match
+
+    """
+    positive, p_classname = file_path, None
+    negative, n_classname = file_path, None
+    # Get positive class example
+    while positive == file_path:
+        example = random.choices(list_ds)[0]
+        example_class_name = get_class_name(example)
+        if is_same_class(file_path, example_class_name):
+            positive = example
+            p_classname = example_class_name
+    # Get negative class example
+    while negative == file_path:
+        example = random.choices(list_ds)[0]
+        example_class_name = get_class_name(example)
+        if not is_same_class(file_path, example_class_name):
+            negative = example
+            n_classname = example_class_name
+    return positive, p_classname, negative, n_classname
+
+
+def preprocess(input_array, label, img_size=256, img_source='img'):
+
+    if img_source == 'img':
+        anchor_img = format_example(image_name=input_array['anchor'], img_size=img_size)
+        other_img = format_example(image_name=input_array['other'], img_size=img_size)
+        label = tf.reshape(label, (1,1))
+        return (anchor_img, other_img), label
+
+    else:
+        format_example = format_example_tf
+        exit(1)
+
+
 
 
 # processing images
-def format_example(image_name=None, img_size=256):
+def format_example(image_name=None, img_size=256, train=True):
     """
     Apply any image preprocessing here
     :param image_name: the specific filename of the image
     :param img_size: size that images should be reshaped to
     :return: image
     """
-    global status
-    train = status
+
     image = tf.io.read_file(image_name)
     image = tf.io.decode_jpeg(image)
     image = tf.cast(image, tf.float32)
@@ -104,7 +116,7 @@ def format_example(image_name=None, img_size=256):
 
 
 # extracting images and labels from tfrecords
-def format_example_tf(tfrecord_proto, img_size=256):
+def format_example_tf(image_name=None, img_size=256):
     # Parse the input tf.Example proto using the dictionary above.
     # Create a dictionary describing the features.
     global tf_image, tf_label, status
@@ -113,7 +125,7 @@ def format_example_tf(tfrecord_proto, img_size=256):
         tf_image: tf.io.FixedLenFeature((), tf.string, ""),
         tf_label: tf.io.FixedLenFeature((), tf.int64, -1),
     }
-    parsed_image_dataset = tf.io.parse_single_example(tfrecord_proto, image_feature_description)
+    parsed_image_dataset = tf.io.parse_single_example(image_name, image_feature_description)
     # image = parsed_image_dataset['image/encoded']
     # label = parsed_image_dataset['phenotype/TP53_Mutations']
     image = parsed_image_dataset[tf_image]
@@ -134,104 +146,3 @@ def format_example_tf(tfrecord_proto, img_size=256):
 
     image = tf.reshape(image, (img_size, img_size, 3))
     return image, label
-
-
-# Create pairs for one shot learning
-def create_triplets_oneshot(t_image_ds):
-    list_images = []
-    list_labels = []
-    # adding images and labels to the list
-    for image, label in t_image_ds:
-        list_images.append(image)
-        list_labels.append(label.numpy())
-    # unique labels
-    unique_labels = list(set(list_labels))
-    unique_labels_num = []
-    unique_labels_index = []
-    # creating array of indexes per label and number of images per label
-    for label in unique_labels:
-        inx = [x for x in range(0, len(list_labels)) if list_labels[x] == label]
-        unique_labels_num.append(len(inx))
-        unique_labels_index.append(inx)
-
-    # max number of images per label category
-    max_unique_labels_num = max(unique_labels_num)
-
-    # randomly selecting images for a, p, & n class
-    list_img_index = []
-    list_img_label = []
-    # iterating through all classes
-    for i in range(0, len(unique_labels)):
-        # iterating number of times equal to max image count of all category (doing this step , not to over represent
-        # the categories with more images)
-        for j in range(0, max_unique_labels_num):
-            tmp_a_idx = i
-            tmp_p_idx = tmp_a_idx
-            tmp_unique_labels = list(range(0, len(unique_labels)))
-            tmp_unique_labels.remove(tmp_p_idx)
-            # selecting other category for 'n' class
-            tmp_n_idx = random.choices(tmp_unique_labels, k=1)[0]
-            # selecting image index for 'a','n' & 'p' category randomly
-            tmp_a_idx_img = random.choices(unique_labels_index[tmp_a_idx], k=1)[0]
-            tmp_p_idx_img = random.choices(unique_labels_index[tmp_p_idx], k=1)[0]
-            tmp_n_idx_img = random.choices(unique_labels_index[tmp_n_idx], k=1)[0]
-            # extracting actual images with selected indexes for each class 'a','p' & 'n'
-            list_img_label.append([tmp_a_idx, tmp_p_idx, tmp_n_idx])
-    return list_img_index, max_unique_labels_num, list_img_label
-
-
-def create_triplets_oneshot_img(t_image_ds, t_label_ds):
-    """
-
-    Args:
-        t_image_ds: image list
-        t_label_ds: image class
-
-    Returns:
-            list_img_index: a set of images
-            max_unique_labels_num: number of images that will be in a batch (so we dont over represent one class)
-            list_img_label: a label for each of the three images in a triplet (e.g. [0, 0, 1])
-    """
-    list_images = []
-    list_labels = []
-    # adding images and labels to the list
-    for image in t_image_ds:
-        list_images.append(image)
-
-    for label in t_label_ds:
-        list_labels.append(label.numpy())
-    # unique labels
-    unique_labels = list(set(list_labels))
-    unique_labels_num = []
-    unique_labels_index = []
-    # creating array of indexes per label and number of images per label
-    for label in unique_labels:
-        inx = [x for x in range(0, len(list_labels)) if list_labels[x] == label]
-        unique_labels_num.append(len(inx))
-        unique_labels_index.append(inx)
-
-    # max number of images per label category
-    max_unique_labels_num = max(unique_labels_num)
-
-    # randomly selecting images for a,p & n class
-    list_img_index = []
-    list_img_label = []
-    # iterating through all classes
-    for i in range(0, len(unique_labels)):
-        # iterating number of times equal to max image count of all category (doing this step , not to over represent
-        # the categories with more images)
-        for j in range(0, max_unique_labels_num):
-            tmp_a_idx = i
-            tmp_p_idx = tmp_a_idx
-            tmp_unique_labels = list(range(0, len(unique_labels)))
-            tmp_unique_labels.remove(tmp_p_idx)
-            # selecting other category for 'n' class
-            tmp_n_idx = random.choices(tmp_unique_labels, k=1)[0]
-            # selecting image index for 'a','n' & 'p' category randonly
-            tmp_a_idx_img = random.choices(unique_labels_index[tmp_a_idx], k=1)[0]
-            tmp_p_idx_img = random.choices(unique_labels_index[tmp_p_idx], k=1)[0]
-            tmp_n_idx_img = random.choices(unique_labels_index[tmp_n_idx], k=1)[0]
-            # extracting actual images with selected indexes for each class 'a','p' & 'n'
-            list_img_index.append((list_images[tmp_a_idx_img], list_images[tmp_p_idx_img], list_images[tmp_n_idx_img]))
-            list_img_label.append([tmp_a_idx, tmp_p_idx, tmp_n_idx])
-    return list_img_index, max_unique_labels_num, list_img_label

@@ -20,7 +20,7 @@ def triplet_loss(anchor=None,
     # minimize the distance between the anchor and the positive
     pos_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, positive)), 1)
     # maximize distance between the anchor and the negative
-    neg_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)
+    neg_dist = -tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)
 
     return neg_dist, pos_dist
 
