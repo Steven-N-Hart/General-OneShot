@@ -5,7 +5,7 @@ import os
 import sys
 import tensorflow as tf
 from model_factory import GetModel
-import re
+from losses import triplet_loss as loss_fn
 from preprocess import get_doublets_and_labels, preprocess
 
 print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
@@ -152,34 +152,13 @@ anchor, other, labels = get_doublets_and_labels(args.image_dir_train, label_dict
 #ds = tf.data.Dataset.from_tensor_slices((ds, labels))
 ds = tf.data.Dataset.from_tensor_slices(({"anchor":anchor, "other": other}, labels))
 # Convert filepaths to images and label strings to ints
-ds = ds.map(preprocess).batch(5, drop_remainder=True)
-
-# ####################################################################
-# Temporary cleaning function
-# ####################################################################
-overwrite = True
-if overwrite is True:
-    for root, dirs, files in os.walk(out_dir):
-        for file in filter(lambda x: re.match(checkpoint_name, x), files):
-            print('Removing: {}'.format(os.path.join(root, file)))
-            os.remove(os.path.join(root, file))
-        for file in filter(lambda x: re.match('checkpoint', x), files):
-            print('Removing: {}'.format(os.path.join(root, file)))
-            os.remove(os.path.join(root, file))
-        for file in filter(lambda x: re.match('events', x), files):
-            print('Removing: {}'.format(os.path.join(root, file)))
-            os.remove(os.path.join(root, file))
-        for file in filter(lambda x: re.match('ckpt', x), files):
-            print('Removing: {}'.format(os.path.join(root, file)))
-            os.remove(os.path.join(root, file))
-        for file in filter(lambda x: re.match('siamese', x), files):
-            print('Removing: {}'.format(os.path.join(root, file)))
-            os.remove(os.path.join(root, file))
+ds = ds.map(preprocess).batch(args.BATCH_SIZE, drop_remainder=True)
 
 ###############################################################################
 # Define callbacks
 ###############################################################################
 #cb = CallBacks(learning_rate=args.lr, log_dir=out_dir)
+
 cb=[tf.keras.callbacks.TensorBoard(log_dir=out_dir, write_graph=False, update_freq=100),
     tf.keras.callbacks.ModelCheckpoint(os.path.join(out_dir,'siamesenet'), monitor='loss', verbose=0, mode='auto'),
     tf.keras.callbacks.EarlyStopping(monitor='loss', patience=3)
@@ -188,20 +167,40 @@ cb=[tf.keras.callbacks.TensorBoard(log_dir=out_dir, write_graph=False, update_fr
 ###############################################################################
 # Build model
 ###############################################################################
-strategy = tf.distribute.MirroredStrategy()
-with strategy.scope():
-    m = GetModel(model_name=args.model_name, img_size=args.patch_size, embedding_size=args.embedding_size)
-    logger.debug('Model constructed')
-    model = m.build_model()
-    model.summary()
-    logger.debug('Model built')
-    optimizer = m.get_optimizer(args.optimizer)
-    model.compile(optimizer=optimizer,
+
+traditional=False
+if traditional is True:
+    strategy = tf.distribute.MirroredStrategy()
+    with strategy.scope():
+        m = GetModel(model_name=args.model_name, img_size=args.patch_size, embedding_size=args.embedding_size)
+        model = m.build_model()
+        model.summary()
+        optimizer = m.get_optimizer(args.optimizer, lr=args.lr)
+        model.compile(optimizer=optimizer,
                   loss='binary_crossentropy',
                   metrics=['binary_accuracy', tf.keras.metrics.BinaryCrossentropy(from_logits=True, label_smoothing=0.2)])
+    model.fit(ds, epochs=args.num_epochs, callbacks=cb, validation_data=vds, validation_steps=100)
+else:
+    m = GetModel(model_name=args.model_name, img_size=args.patch_size, embedding_size=args.embedding_size)
+    model = m.build_model()
+    model.summary()
+    optimizer = m.get_optimizer(args.optimizer, lr=args.lr)
+    writer = tf.summary.create_file_writer(out_dir)
+    for epoc in range(1, args.num_epochs + 1):
+        for step, (x_batch_train, y_batch_train) in enumerate(ds):
+            step *= epoc
+            with tf.GradientTape() as tape:
+                logits = model(x_batch_train, training=True)
+                loss_value = loss_fn(y_batch_train, logits)
+            grads = tape.gradient(loss_value, model.trainable_weights)
+            optimizer.apply_gradients(zip(grads, model.trainable_weights))
+            if step % args.log_freq == 0:
+                print(f'\rStep: {step}\tLoss: {loss_value[0]:04f}', end='')
+                with writer.as_default():
+                    tf.summary.scalar('dist', loss_value[0], step=step)
+
 
 ###############################################################################
-# Run model
+# Save model
 ###############################################################################
-model.fit(ds, epochs=args.num_epochs, callbacks=cb)
 model.save(os.path.join(out_dir,'siamesenet'), overwrite=True)
