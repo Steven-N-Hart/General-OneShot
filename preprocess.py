@@ -16,16 +16,10 @@ def get_doublets_and_labels(directory_path, label_dict=None, suffix='jpg'):
         positive, p_classname, negative, n_classname = get_another_of_each_class(img_path, list_ds)
         anchors.append(img_path)
         others.append(positive)
-        try:
-            labels.append(int(p_classname))
-        except ValueError:
-            labels.append(int(label_dict[p_classname]))
+        labels.append([1.])
         anchors.append(img_path)
         others.append(negative)
-        try:
-            labels.append(int(n_classname))
-        except ValueError:
-            labels.append(int(label_dict[n_classname]))
+        labels.append([0.])
 
     return anchors, others, labels
 
@@ -73,12 +67,12 @@ def get_another_of_each_class(file_path, list_ds):
     return positive, p_classname, negative, n_classname
 
 
-def preprocess(input_array, label, img_size=256, img_source='img'):
+def preprocess(input_array, label, img_size=256, img_source='img', train=False):
 
     if img_source == 'img':
-        anchor_img = format_example(image_name=input_array['anchor'], img_size=img_size)
-        other_img = format_example(image_name=input_array['other'], img_size=img_size)
-        label = tf.reshape(label, (1,1))
+        anchor_img = format_example(image_name=input_array['anchor'], img_size=img_size, train=train)
+        other_img = format_example(image_name=input_array['other'], img_size=img_size, train=train)
+        label = tf.squeeze(label)
         return (anchor_img, other_img), label
 
     else:
@@ -102,7 +96,8 @@ def format_example(image_name=None, img_size=256, train=True):
     image = tf.cast(image, tf.float32)
     image = tf.image.per_image_standardization(image)
     image = tf.image.resize(image, (img_size, img_size))
-    image = tf.cast(image, tf.float32) / 255.
+    #image = tf.cast(image, tf.float32) / 255.
+    image = tf.math.divide(tf.math.subtract(image, 127.5), 127.5)  # normalize to [-1, 1] instead of 0-255
 
     if train is True:
         image = tf.image.random_flip_left_right(image)
@@ -111,7 +106,7 @@ def format_example(image_name=None, img_size=256, train=True):
         image = tf.image.random_flip_up_down(image)
         image = tf.image.random_hue(image, max_delta=0.2)
     image = tf.reshape(image, (img_size, img_size, 3))
-
+    image = tf.squeeze(image)
     return image
 
 

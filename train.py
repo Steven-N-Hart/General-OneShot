@@ -7,7 +7,9 @@ import tensorflow as tf
 from model_factory import GetModel
 from losses import triplet_loss as loss_fn
 from preprocess import get_doublets_and_labels, preprocess
+import numpy as np
 
+#os.environ['CUDA_VISIBLE_DEVICES']="2,3"
 print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 if len(tf.config.experimental.list_physical_devices('GPU')) == 0:
     exit()
@@ -86,12 +88,12 @@ parser.add_argument("-r", "--learning-rate",
 parser.add_argument("-e", "--num-epochs",
                     dest='num_epochs',
                     help="Number of epochs to use for training",
-                    default=5, type=int)
+                    default=15, type=int)
 
 parser.add_argument("-b", "--batch-size",
                     dest='BATCH_SIZE',
                     help="Number of batches to use for training",
-                    default=1, type=int)
+                    default=10, type=int)
 
 parser.add_argument("-V", "--verbose",
                     dest="logLevel",
@@ -118,7 +120,6 @@ parser.add_argument("--tfrecord_label",
 parser.add_argument('-f', "--log_freq",
                     dest="log_freq",
                     default=100,
-
                     help="Set the logging frequency for saving Tensorboard updates", type=int)
 
 parser.add_argument('-a', "--accuracy_num_batch",
@@ -138,7 +139,7 @@ logger.setLevel(args.logLevel)
 # Set some globals
 ###############################################################################
 out_dir = os.path.join(args.log_dir,
-                       args.model_name + '_' + args.optimizer + '_' + str(args.lr))
+                       args.model_name + '_' + args.optimizer + '_' + str(args.lr) + '_' + str(args.BATCH_SIZE))
 if not os.path.exists(out_dir):
     os.makedirs(out_dir)
 
@@ -149,58 +150,56 @@ checkpoint_name = 'training_checkpoints'
 ###############################################################################
 label_dict ={'positive': 1, 'negative': 0}
 anchor, other, labels = get_doublets_and_labels(args.image_dir_train, label_dict=label_dict)
-#ds = tf.data.Dataset.from_tensor_slices((ds, labels))
 ds = tf.data.Dataset.from_tensor_slices(({"anchor":anchor, "other": other}, labels))
-# Convert filepaths to images and label strings to ints
-ds = ds.map(preprocess).batch(args.BATCH_SIZE, drop_remainder=True)
+ds = ds.map(preprocess).batch(args.BATCH_SIZE, drop_remainder=True)  # Convert filepaths to images and label strings to ints
+
+v_ds = args.image_dir_validation
+if v_ds is not None:
+    v_anchor, v_other, v_labels = get_doublets_and_labels(args.image_dir_validation, label_dict=label_dict)
+    v_ds = tf.data.Dataset.from_tensor_slices(({"anchor": v_anchor, "other": v_other}, v_labels))
+    v_ds = v_ds.map(preprocess).batch(args.BATCH_SIZE,
+                                  drop_remainder=True)  # Convert filepaths to images and label strings to ints
 
 ###############################################################################
 # Define callbacks
 ###############################################################################
-#cb = CallBacks(learning_rate=args.lr, log_dir=out_dir)
+def scheduler(epoch):
+    if epoch < 5:
+        return 0.01
+    elif epoch < 10:
+        return 0.001
+    else:
+        return 0.001 * tf.math.exp(0.1 * (10 - epoch))
 
-cb=[tf.keras.callbacks.TensorBoard(log_dir=out_dir, write_graph=False, update_freq=100),
-    tf.keras.callbacks.ModelCheckpoint(os.path.join(out_dir,'siamesenet'), monitor='loss', verbose=0, mode='auto'),
-    tf.keras.callbacks.EarlyStopping(monitor='loss', patience=3)
-]
+
+cb = [tf.keras.callbacks.TensorBoard(log_dir=out_dir, histogram_freq=1, update_freq=args.log_freq),
+      tf.keras.callbacks.ModelCheckpoint(os.path.join(out_dir, 'siamesenet'), monitor='mse', verbose=0,
+                                         mode='auto'),
+        tf.keras.callbacks.LearningRateScheduler(scheduler)
+      ]
 
 ###############################################################################
 # Build model
 ###############################################################################
-
-traditional=False
-if traditional is True:
-    strategy = tf.distribute.MirroredStrategy()
-    with strategy.scope():
-        m = GetModel(model_name=args.model_name, img_size=args.patch_size, embedding_size=args.embedding_size)
-        model = m.build_model()
-        model.summary()
-        optimizer = m.get_optimizer(args.optimizer, lr=args.lr)
-        model.compile(optimizer=optimizer,
-                  loss='binary_crossentropy',
-                  metrics=['binary_accuracy', tf.keras.metrics.BinaryCrossentropy(from_logits=True, label_smoothing=0.2)])
-    model.fit(ds, epochs=args.num_epochs, callbacks=cb, validation_data=vds, validation_steps=100)
-else:
+strategy = tf.distribute.MirroredStrategy()
+with strategy.scope():
     m = GetModel(model_name=args.model_name, img_size=args.patch_size, embedding_size=args.embedding_size)
     model = m.build_model()
     model.summary()
     optimizer = m.get_optimizer(args.optimizer, lr=args.lr)
-    writer = tf.summary.create_file_writer(out_dir)
-    for epoc in range(1, args.num_epochs + 1):
-        for step, (x_batch_train, y_batch_train) in enumerate(ds):
-            step *= epoc
-            with tf.GradientTape() as tape:
-                logits = model(x_batch_train, training=True)
-                loss_value = loss_fn(y_batch_train, logits)
-            grads = tape.gradient(loss_value, model.trainable_weights)
-            optimizer.apply_gradients(zip(grads, model.trainable_weights))
-            if step % args.log_freq == 0:
-                print(f'\rStep: {step}\tLoss: {loss_value[0]:04f}', end='')
-                with writer.as_default():
-                    tf.summary.scalar('dist', loss_value[0], step=step)
+    model.compile(optimizer=optimizer,
+              loss='binary_crossentropy',
+              metrics=['binary_accuracy', 'mse', tf.keras.metrics.AUC()])
+
+if args.image_dir_validation is None:
+    model.fit(ds, epochs=args.num_epochs, callbacks=cb )
+else:
+    model.fit(ds, epochs=args.num_epochs, callbacks=cb, validation_data=v_ds)
+
+outfile_dir = os.path.join(out_dir,'siamesenet')
+model.reset_metrics()
+model.save(outfile_dir, save_format='tf')
+print('Completed and saved {outfile_dir}')
+exit(0)
 
 
-###############################################################################
-# Save model
-###############################################################################
-model.save(os.path.join(out_dir,'siamesenet'), overwrite=True)
