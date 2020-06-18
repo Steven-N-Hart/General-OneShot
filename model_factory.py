@@ -1,112 +1,169 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, GlobalAveragePooling2D, Flatten
-from tensorflow.keras import Model
+from tensorflow.keras.layers import Input, Dense, Flatten, Conv2D, MaxPooling2D, Lambda, GlobalMaxPooling2D, GlobalAveragePooling2D, Dropout
+from tensorflow.keras import Model, Sequential
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.backend import abs
 
-from losses import lossless_triplet_loss as triplet_loss
+W_init = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.01)
+W_init_fc = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.2)
+b_init = tf.keras.initializers.TruncatedNormal(mean=0.05, stddev=0.01)
+
+def get_emb_vec(IMG_SHAPE):
+    IMG_SHAPE = (224,224,3)
+    input_shape = IMG_SHAPE
+
+    W_init = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.01)
+    W_init_fc = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.2)
+    b_init = tf.keras.initializers.TruncatedNormal(mean=0.05, stddev=0.01)
+
+    model = tf.keras.applications.ResNet50(weights='imagenet', include_top=False, input_shape=IMG_SHAPE)
+    model.trainable = False
+    x = model.output
+    x = GlobalAveragePooling2D(name='avg_pool')(x)
+    x = Flatten()(x)
+    x = Dropout(0.3)(x)
+    out = Dense(128, kernel_regularizer=l2(2e-4), kernel_initializer=W_init_fc, bias_initializer=b_init)(x)
+    conv_model = Model(inputs=model.input, outputs=out)
+    return conv_model
+
+def custom(IMG_SHAPE):
+    input_shape = IMG_SHAPE
+    model = Sequential()
+    model.add(Conv2D(64, (10,10), activation='relu', input_shape=input_shape,
+                   kernel_initializer=W_init, kernel_regularizer=l2(2e-4)))
+    model.add(MaxPooling2D())
+    model.add(Conv2D(128, (7,7), activation='relu',
+                     kernel_initializer=W_init,
+                     bias_initializer=b_init, kernel_regularizer=l2(2e-4)))
+    model.add(MaxPooling2D())
+    model.add(Conv2D(128, (4,4), activation='relu', kernel_initializer=W_init,
+                     bias_initializer=b_init, kernel_regularizer=l2(2e-4)))
+    model.add(MaxPooling2D())
+    model.add(Conv2D(256, (4,4), activation='relu', kernel_initializer=W_init,
+                     bias_initializer=b_init, kernel_regularizer=l2(2e-4)))
+    return model
 
 class GetModel:
 
-    def __init__(self, model_name=None, img_size=256, classes=1, weights='imagenet', retrain=True, num_layers=None):
+    def __init__(self, model_name=None, img_size=256, embedding_size=128, weights='imagenet', retrain=True,
+                 num_layers=None,
+                 margin=0.2):
         super().__init__()
         self.model_name = model_name
         self.img_size = img_size
-        self.classes = classes
+        self.embedding_size = embedding_size
         self.weights = weights
         self.num_layers = num_layers
-        self.model, self.preprocess = self.__get_model_and_preprocess(retrain)
+        self.model = self.__get_model(retrain)
+        self.margin = margin
 
-    def __get_model_and_preprocess(self, retrain):
+    def __get_model(self, retrain=True):
+
         if retrain is True:
             include_top = False
         else:
             include_top = True
-
-        input_tensor = Input(shape=(self.img_size, self.img_size, 3))
         weights = self.weights
         IMG_SHAPE = (self.img_size, self.img_size, 3)
-
+        anchor_input_tensor = Input(shape=IMG_SHAPE, name='anchor_img')
+        other_input_tensor = Input(shape=IMG_SHAPE, name='other_img')
+        input_tensor = Input(shape=IMG_SHAPE, name='anchor_img')
         if self.model_name == 'DenseNet121':
             model = tf.keras.applications.DenseNet121(weights=weights, include_top=include_top,
-                                                      input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.densenet.preprocess_input(input_tensor)
+                                                      input_shape=IMG_SHAPE)
 
         elif self.model_name == 'DenseNet169':
             model = tf.keras.applications.DenseNet169(weights=weights, include_top=include_top,
-                                                      input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.densenet.preprocess_input(input_tensor)
+                                                      input_shape=IMG_SHAPE)
 
         elif self.model_name == 'DenseNet201':
             model = tf.keras.applications.DenseNet201(weights=weights, include_top=include_top,
-                                                      input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.densenet.preprocess_input(input_tensor)
+                                                      input_shape=IMG_SHAPE)
 
         elif self.model_name == 'InceptionResNetV2':
             model = tf.keras.applications.InceptionResNetV2(weights=weights, include_top=include_top,
-                                                            input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.inception_resnet_v2.preprocess_input(input_tensor)
+                                                            input_shape=IMG_SHAPE)
 
         elif self.model_name == 'InceptionV3':
             model = tf.keras.applications.InceptionV3(weights=weights, include_top=include_top,
-                                                      input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.inception_v3.preprocess_input(input_tensor)
+                                                      input_shape=IMG_SHAPE)
 
         elif self.model_name == 'MobileNet':
             model = tf.keras.applications.MobileNet(weights=weights, include_top=include_top,
-                                                    input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.mobilenet.preprocess_input(input_tensor)
+                                                    input_shape=IMG_SHAPE)
 
         elif self.model_name == 'MobileNetV2':
             model = tf.keras.applications.MobileNetV2(weights=weights, include_top=include_top,
-                                                      input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.mobilenet_v2.preprocess_input(input_tensor)
+                                                      input_shape=IMG_SHAPE)
 
         elif self.model_name == 'NASNetLarge':
             model = tf.keras.applications.NASNetLarge(weights=weights, include_top=include_top,
-                                                      input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.nasnet.preprocess_input(input_tensor)
+                                                      input_shape=IMG_SHAPE)
 
         elif self.model_name == 'NASNetMobile':
-            model = tf.keras.applications.NASNetMobile(weights=weights, include_top=include_top,
-                                                       input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.nasnet.preprocess_input(input_tensor)
+            model = tf.keras.applications.NASNetMobile(weights=weights, include_top=include_top, input_shape=IMG_SHAPE)
 
         elif self.model_name == 'ResNet50':
-            model = tf.keras.applications.ResNet50(weights=weights, include_top=include_top,
-                                                   input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.resnet50.preprocess_input(input_tensor)
+            model = tf.keras.applications.ResNet50(weights=weights, include_top=include_top, input_shape=IMG_SHAPE)
 
+        elif self.model_name == 'ResNet152':
+            model = tf.keras.applications.ResNet152(weights=weights, include_top=include_top,input_shape=IMG_SHAPE)
+            
         elif self.model_name == 'VGG16':
-            print('Model loaded was VGG16')
             model = tf.keras.applications.VGG16(weights=weights, include_top=include_top,
-                                                input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.vgg16.preprocess_input(input_tensor)
+                                                input_shape=IMG_SHAPE)
 
         elif self.model_name == 'VGG19':
             model = tf.keras.applications.VGG19(weights=weights, include_top=include_top,
-                                                input_tensor=input_tensor, input_shape=IMG_SHAPE)
-            preprocess = tf.keras.applications.vgg19.preprocess_input(input_tensor)
+                                                input_shape=IMG_SHAPE)
 
+        elif self.model_name == 'custom':
+            model = custom(IMG_SHAPE)
+
+        elif self.model_name == 'two_layer_nn':
+            model = two_layer_nn(IMG_SHAPE)
         else:
             raise AttributeError("{} not found in available models".format(self.model_name))
 
-        # Add a global average pooling and change the output size to our number of classes
-        base_model = model
-        x = base_model.output
+        #model.trainable = True
+        #if self.model_name != 'custom':
+            #model.trainable = False
+        for layer in model.layers:
+            layer.trainable = True
+        x = model.output
+        #if retrain is True:
+        x = GlobalAveragePooling2D(name='avg_pool')(x)
+        
+        # x = BatchNormalization()(x)
+        # x = Dropout(0.35)(x)
+        # x = Dense(4096, activation='relu',kernel_regularizer=regularizers.l2(0.0002))(x)
+        # x = BatchNormalization()(x)
+        # x = Dropout(0.35)(x)
+        # x = Dense(4096, activation='relu',kernel_regularizer=regularizers.l2(0.0002))(x)
         x = Flatten()(x)
-        out = Dense(1, activation='sigmoid')(x)
-        conv_model = Model(inputs=input_tensor, outputs=out)
+        
+        # x = Dense(4096,activation='sigmoid', kernel_regularizer=l2(0.0001), kernel_initializer=W_init_fc, bias_initializer=b_init)(x)
+        # x = Dropout(0.3)(x)
+        # x = Dense(4096,activation='sigmoid', kernel_regularizer=l2(0.0001), kernel_initializer=W_init_fc, bias_initializer=b_init)(x)
+        # x = Dropout(0.3)(x)
+        #, kernel_regularizer=l2(0.0002), kernel_initializer=W_init_fc, bias_initializer=b_init
+        out = Dense(self.embedding_size, activation='sigmoid')(x)
+        #out = Dense(4096,activation='sigmoid', kernel_initializer=W_init_fc, bias_initializer=b_init)(x)
+        #out = Dense(self.classes, kernel_regularizer=regularizers.l2(0.0001), activation='softmax')(x)
+        conv_model = Model(inputs=model.input, outputs=out)
 
-        # Now check to see if we are retraining all but the head, or deeper down the stack
-        if self.num_layers is not None:
-            for layer in base_model.layers[:self.num_layers]:
-                layer.trainable = False
-            for layer in base_model.layers[self.num_layers:]:
-                layer.trainable = True
+        anchor_encoded = conv_model(anchor_input_tensor)
+        other_encoded = conv_model(other_input_tensor)
+        # Get L1 Distances
+        L1_layer = Lambda(lambda tensors: abs(tensors[0] - tensors[1]))
+        x = L1_layer([anchor_encoded, other_encoded])
+        prediction = Dense(2, activation='sigmoid',bias_initializer=b_init)(x)
+        #prediction = Lambda(lambda x: tf.squeeze(x))(prediction)
+        siamese_net = Model(inputs=[anchor_input_tensor, other_input_tensor], outputs=prediction)
 
-        return conv_model, preprocess
-
-
-    def _get_optimizer(self, name, lr=0.001):
+        return siamese_net
+        
+    def get_optimizer(self, name, lr=0.00006):
         if name == 'Adadelta':
             optimizer = tf.keras.optimizers.Adadelta(learning_rate=lr)
         elif name == 'Adagrad':
@@ -128,28 +185,6 @@ class GetModel:
 
         return optimizer
 
-    def compile_model(self, optimizer, lr, img_size=256):
-        conv_model = self.model
+    def build_model(self):
+        return self.model
 
-        # Now I need to form my one-shot model structure
-        in_dims = [img_size, img_size, 3]
-
-        # Create the 3 inputs
-        anchor_in = Input(shape=in_dims, name='anchor')
-        pos_in = Input(shape=in_dims, name='pos_img')
-        neg_in = Input(shape=in_dims, name='neg_img')
-
-        # Share base network with the 3 inputs
-        anchor_out = conv_model(anchor_in)
-        pos_out = conv_model(pos_in)
-        neg_out = conv_model(neg_in)
-
-        y_pred = tf.keras.layers.concatenate([anchor_out, pos_out, neg_out])
-
-        # Define the trainable model
-        model = Model(inputs=[{'anchor': anchor_in,
-                               'pos_img': pos_in,
-                               'neg_img': neg_in}], outputs=y_pred)
-        model.compile(optimizer=self._get_optimizer(optimizer, lr=lr), loss=triplet_loss)
-
-        return model

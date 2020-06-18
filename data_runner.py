@@ -3,11 +3,9 @@ import tensorflow as tf
 
 class DataRunner:
 
-    def __init__(self, image_file_list, train=True, image_size=256):
+    def __init__(self, image_file_list):
         super().__init__()
         self.image_file_list = image_file_list
-        self.train = train
-        self.image_size = image_size
 
     @staticmethod
     def format_example(image_name=None, img_size=256, train=True):
@@ -34,14 +32,16 @@ class DataRunner:
 
         image = tf.reshape(image, (img_size, img_size, 3))
 
-        return image
+        return image.numpy()
 
     def get_distributed_datasets(self):
         for i in self.image_file_list:
-            a_img = self.format_example(i[0], img_size=self.image_size, train=self.train)
-            p_img = self.format_example(i[1], img_size=self.image_size, train=self.train)
-            n_img = self.format_example(i[2], img_size=self.image_size, train=self.train)
-
-            yield {"anchor": a_img, "pos_img": p_img,"neg_img": n_img}, [1, 1, 0]
-
-
+            #v1=[]
+            #if i[2] == "0":
+                #ky = {"anchor_img": i[0], "other_img": i[1]}
+                #vl = [0,1]
+            #if i[2] == "1":
+                #ky = {"anchor_img": i[0], "other_img": i[1]}
+                #vl = [1, 0]
+            #yield {"anchor_img": i[0], "pos_img": i[1], "neg_img": i[2]}, [1, 1, 0]
+            yield {"anchor_img": i[0], "other_img": i[1]}, i[2]
