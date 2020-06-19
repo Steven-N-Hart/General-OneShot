@@ -45,3 +45,14 @@ python /projects/shart/digital_pathology/scripts/General-OneShot/train.py \
         ├── 1.jpg
         └── 2.jpg
 ```
+
+####visualize tensorboard
+```
+tensorboard --logdir <Path to log dir> --port 8089 --host localhost
+
+sample run:
+tensorboard --logdir /projects/shart/digital_pathology/data/dogs_vs_cats/log_hardsamp_test --port 8089 --host localhost
+
+url:
+firefox http://localhost:8088/
+```
