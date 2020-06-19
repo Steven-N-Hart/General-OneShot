@@ -183,6 +183,7 @@ else:
 train_ds_dr = DataRunner(t_image_label_ds)
 logger.debug('Completed Data runner')
 
+#Getting the pair of images with label (0,1 if pair is from same class, 1,0 from different class)
 train_ds = tf.data.Dataset.from_generator(train_ds_dr.get_distributed_datasets,
                                           output_types=({
                                                             "anchor_img": tf.float32,
@@ -192,7 +193,7 @@ train_ds = tf.data.Dataset.from_generator(train_ds_dr.get_distributed_datasets,
                                                              "anchor_img": [args.patch_size, args.patch_size, 3],
                                                              "other_img": [args.patch_size, args.patch_size, 3],
                                                          }, (2,)))
-
+#number of pairs in train_ds
 train_data_num=0
 for img_data, labels in train_ds:
     train_data_num=train_data_num+1
@@ -249,7 +250,7 @@ else:
 
 
 # ####################################################################
-# Temporary cleaning function
+# Output log directory name
 # ####################################################################
 out_dir = os.path.join(args.log_dir,
                        args.model_name + '_' + args.optimizer + '_' + str(args.lr) + '_' + str(args.nb_layers))
@@ -272,6 +273,7 @@ checkpoint_dir = os.path.dirname(checkpoint_path)
 ###############################################################################
 # Build model
 ###############################################################################
+#for traning this flag should be 1
 training_flag = 1
 if training_flag == 1:
     overwrite = True
@@ -296,6 +298,7 @@ if training_flag == 1:
     ###############################################################################
     # Build model
     ###############################################################################
+    #here traditional mean using model.fit or manually do the model fitting
     traditional = True
     if traditional is True:
         strategy = tf.distribute.MirroredStrategy()
